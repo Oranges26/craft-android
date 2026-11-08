@@ -1,0 +1,213 @@
+# Builds the Android apps and publishes each as a GitHub release the Craft launcher installs from.
+#
+# Runs every 6 hours (and on pushes, and by hand from the Actions tab). An app is rebuilt only when
+# its upstream repository has new commits or its port in this repository changed, so a quiet
+# upstream costs one short check. A build that fails (an upstream change the port has not caught
+# up with) leaves the previous release in place; GitHub emails the repository owner.
+
+name: Build Android apps
+
+on:
+  schedule:
+    - cron: "17 */6 * * *"
+  push:
+    branches: [main]
+    paths: ["lightcraft/**", "filmcraft/**", "launcher/**", "mobile-kit/**", "common/**", ".github/workflows/build.yml", "tools/**"]
+  workflow_dispatch:
+    inputs:
+      apps:
+        description: "Apps to build: all, or a comma list (lightcraft,filmcraft,launcher)"
+        default: all
+      force:
+        description: "Build even when nothing changed"
+        type: boolean
+        default: false
+      upstream_ref:
+        description: "Upstream branch or tag to build (default: the default branch)"
+        default: ""
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # Setting the repository up from a phone: upload craft-android.zip with GitHub's web page and
+  # this job unpacks it (everything but .github, which can't be pushed from a workflow).
+  unpack:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - name: Unpack an uploaded zip
+        run: |
+          Z=$(ls *.zip 2>/dev/null | head -1)
+          if [ -n "$Z" ]; then
+            unzip -o "$Z" -x '.github/*'
+            rm -f *.zip
+            git config user.name "github-actions[bot]"
+            git config user.email "41898283+github-actions[bot]@users.noreply.github.com"
+            git add -A
+            git commit -m "Unpack $Z"
+            git push
+          fi
+
+  plan:
+    needs: unpack
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      any: ${{ steps.plan.outputs.any }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          APPS: ${{ inputs.apps || 'all' }}
+          FORCE: ${{ inputs.force || 'false' }}
+          UPSTREAM_REF: ${{ inputs.upstream_ref || '' }}
+        run: python3 tools/ci_plan.py
+
+  build:
+    needs: plan
+    if: needs.plan.outputs.any == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.plan.outputs.matrix) }}
+    env:
+      APP: ${{ matrix.app }}
+      CARGO_TERM_COLOR: always
+      CARGO_PROFILE_RELEASE_DEBUG: "false"
+      CARGO_PROFILE_RELEASE_STRIP: "true"
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost /usr/local/lib/node_modules || true
+          df -h /
+
+      # ---- Rust part (the ports) --------------------------------------------------------------
+      - name: Check out upstream ${{ matrix.upstream }}
+        if: matrix.upstream != ''
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ matrix.upstream }}
+          ref: ${{ matrix.sha }}
+          path: upstream
+
+      - name: Put the port into the upstream workspace
+        if: matrix.upstream != ''
+        run: |
+          cp -r "$APP/crate" "upstream/apps/$APP-mobile"
+          cp -r mobile-kit upstream/mobile-kit
+          echo "UPSTREAM_VERSION=$(grep -m1 -E '^version = ' upstream/Cargo.toml | cut -d'"' -f2)" >> "$GITHUB_ENV"
+
+      - uses: dtolnay/rust-toolchain@stable
+        if: matrix.upstream != ''
+        with:
+          targets: aarch64-linux-android
+
+      - uses: Swatinem/rust-cache@v2
+        if: matrix.upstream != ''
+        with:
+          workspaces: upstream
+          key: ${{ matrix.app }}-android
+          cache-on-failure: true
+
+      - name: Install cargo-ndk
+        if: matrix.upstream != ''
+        run: cargo install cargo-ndk --locked || cargo install cargo-ndk
+
+      - name: Build the native library
+        if: matrix.upstream != ''
+        working-directory: upstream
+        run: |
+          export ANDROID_NDK_HOME="${ANDROID_NDK_LATEST_HOME:-$ANDROID_NDK_HOME}"
+          echo "NDK: $ANDROID_NDK_HOME"
+          cargo ndk -t arm64-v8a --platform 29 -o "../$APP/android/jniLibs" build --release -p "$APP-mobile" --lib
+          ls -la "../$APP/android/jniLibs/arm64-v8a"
+
+      # ---- Android part -----------------------------------------------------------------------
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.11.1"
+
+      - name: Signing key
+        env:
+          KEYSTORE_B64: ${{ secrets.CRAFT_KEYSTORE_B64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.CRAFT_KEYSTORE_PASSWORD }}
+        run: |
+          # The same key must sign every build, or phones refuse updates. A repository secret is
+          # used when set; otherwise the key committed in signing/.
+          if [ -n "$KEYSTORE_B64" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/craft.keystore"
+            PW="$KEYSTORE_PASSWORD"
+          else
+            cp signing/craft.keystore "$RUNNER_TEMP/craft.keystore"
+            PW="$(cat signing/password.txt)"
+          fi
+          echo "CRAFT_KEYSTORE=$RUNNER_TEMP/craft.keystore" >> "$GITHUB_ENV"
+          echo "CRAFT_KEYSTORE_PASSWORD=$PW" >> "$GITHUB_ENV"
+          echo "CRAFT_KEY_PASSWORD=$PW" >> "$GITHUB_ENV"
+          echo "CRAFT_KEY_ALIAS=craft" >> "$GITHUB_ENV"
+
+      - name: Build the APK
+        run: |
+          CODE=$(( ${{ github.run_number }} * 10 + ${{ strategy.job-index }} ))
+          SHORT=$(echo "${{ matrix.sha }}" | cut -c1-7)
+          if [ "$APP" = launcher ]; then
+            NAME="1.0.$CODE"
+            DIR=launcher
+            EXTRA="-PdefaultRepo=${{ github.repository }}"
+          else
+            NAME="${UPSTREAM_VERSION}+${SHORT}"
+            DIR="$APP/android"
+            EXTRA=""
+          fi
+          gradle -p "$DIR" assembleRelease -PversionCode=$CODE -PversionName="$NAME" $EXTRA --no-daemon --stacktrace
+          APK=$(ls "$DIR"/app/build/outputs/apk/release/*.apk | head -1)
+          mkdir -p out
+          cp "$APK" "out/$APP-b$CODE.apk"
+          echo "CODE=$CODE" >> "$GITHUB_ENV"
+          echo "VNAME=$NAME" >> "$GITHUB_ENV"
+          ls -la out
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          case "$APP" in
+            lightcraft) TITLE="LightCraft $VNAME";;
+            filmcraft) TITLE="FilmCraft $VNAME";;
+            launcher) TITLE="Craft Launcher $VNAME";;
+          esac
+          {
+            echo "Build $CODE of $APP for Android (arm64)."
+            echo
+            echo "Why: ${{ matrix.why }}"
+            echo
+            if [ -n "${{ matrix.upstream }}" ]; then echo "upstream: ${{ matrix.upstream }}@${{ matrix.sha }}"; fi
+            echo "port: ${{ matrix.port }}"
+          } > notes.md
+          gh release create "$APP-b$CODE" "out/$APP-b$CODE.apk" --title "$TITLE" --notes-file notes.md --target main
+          # keep the three newest builds of this app
+          gh release list --limit 200 --json tagName -q '.[].tagName' | grep -E "^$APP-b[0-9]+$" | sort -V -r | tail -n +4 | while read -r old; do
+            gh release delete "$old" --yes --cleanup-tag || true
+          done
