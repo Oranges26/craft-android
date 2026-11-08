@@ -1,0 +1,8 @@
+**/jniLibs/
+**/build/
+**/.gradle/
+local.properties
+out/
+upstream/
+*.apk
+__pycache__/

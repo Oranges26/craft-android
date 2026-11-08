@@ -1,0 +1,40 @@
+[package]
+name = "lightcraft-mobile"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "LightCraft for Android: the LightCraft develop engine under a touch UI"
+
+# Built as a member of the upstream LightCraft workspace (CI copies this folder to
+# apps/lightcraft-mobile), so it develops photos with exactly the upstream engine.
+
+[lib]
+name = "lightcraft_mobile"
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "lightcraft-mobile"
+path = "src/main.rs"
+
+[dependencies]
+craft-mobile-kit = { path = "../../mobile-kit" }
+lightcraft-engine = { workspace = true }
+lightcraft-develop = { workspace = true }
+lightcraft-pipeline = { workspace = true }
+lightcraft-raster = { workspace = true }
+lightcraft-codecs = { workspace = true }
+lightcraft-geom = { workspace = true }
+egui = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+log = { workspace = true }
+crc32fast = { workspace = true }
+
+[target.'cfg(target_os = "android")'.dependencies]
+eframe = { workspace = true, features = ["default_fonts", "glow", "android-native-activity"] }
+# the same (patched) winit eframe uses, for its AndroidApp type
+winit = { version = "0.30", default-features = false, features = ["android-native-activity", "rwh_06"] }
+
+[target.'cfg(not(target_os = "android"))'.dependencies]
+eframe = { workspace = true, features = ["default_fonts", "glow", "x11", "wayland"] }

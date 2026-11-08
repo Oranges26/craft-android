@@ -1,0 +1,51 @@
+plugins { id 'com.android.application' }
+
+// Plain Java, no Rust: the launcher only lists, downloads and installs the Craft apps.
+android {
+    namespace 'com.craftandroid.launcher'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId 'com.craftandroid.launcher'
+        minSdk 29
+        targetSdk 35
+        versionCode((project.findProperty('versionCode') ?: '1') as int)
+        versionName((project.findProperty('versionName') ?: '0.0.0-dev') as String)
+        // CI passes -PdefaultRepo=owner/name (the repository the build came from)
+        resValue 'string', 'default_repo', (project.findProperty('defaultRepo') ?: 'OWNER/craft-android') as String
+    }
+
+    signingConfigs {
+        release {
+            def ks = System.getenv('CRAFT_KEYSTORE')
+            if (ks != null && new File(ks).exists()) {
+                storeFile file(ks)
+                storePassword System.getenv('CRAFT_KEYSTORE_PASSWORD')
+                keyAlias System.getenv('CRAFT_KEY_ALIAS')
+                keyPassword System.getenv('CRAFT_KEY_PASSWORD')
+            }
+        }
+    }
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig System.getenv('CRAFT_KEYSTORE') ? signingConfigs.release : signingConfigs.debug
+        }
+    }
+    sourceSets {
+        main {
+            manifest.srcFile "${rootDir}/AndroidManifest.xml"
+            java.srcDirs = ["${rootDir}/src"]
+            res.srcDirs = ["${rootDir}/res"]
+        }
+    }
+    lint {
+        checkReleaseBuilds false
+        abortOnError false
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}

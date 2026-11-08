@@ -1,0 +1,40 @@
+[package]
+name = "filmcraft-mobile"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+description = "FilmCraft for Android: the FilmCraft editing engine under a touch UI"
+
+# Built as a member of the upstream FilmCraft workspace (CI copies this folder to
+# apps/filmcraft-mobile), so it edits and renders with exactly the upstream engine.
+
+[lib]
+name = "filmcraft_mobile"
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "filmcraft-mobile"
+path = "src/main.rs"
+
+[dependencies]
+craft-mobile-kit = { path = "../../mobile-kit" }
+filmcraft-engine = { workspace = true }
+filmcraft-project = { workspace = true }
+filmcraft-render = { workspace = true }
+filmcraft-time = { workspace = true }
+filmcraft-frame = { workspace = true }
+filmcraft-audio-dsp = { workspace = true }
+egui = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+log = { workspace = true }
+cpal = "0.16"
+
+[target.'cfg(target_os = "android")'.dependencies]
+eframe = { workspace = true, features = ["default_fonts", "glow", "android-native-activity"] }
+# the same (patched) winit eframe uses, for its AndroidApp type
+winit = { version = "0.30", default-features = false, features = ["android-native-activity", "rwh_06"] }
+
+[target.'cfg(not(target_os = "android"))'.dependencies]
+eframe = { workspace = true, features = ["default_fonts", "glow", "x11", "wayland"] }

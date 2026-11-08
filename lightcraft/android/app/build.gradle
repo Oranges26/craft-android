@@ -1,0 +1,4 @@
+plugins { id 'com.android.application' }
+
+ext.craft = [id: 'com.craftandroid.lightcraft', lib: 'lightcraft_mobile', label: 'LightCraft']
+apply from: "${rootDir}/../../common/android/craft-app.gradle"

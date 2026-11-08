@@ -1,0 +1,65 @@
+// Shared Android configuration of every Craft port. Each app's app/build.gradle applies the
+// Android plugin, sets `ext.craft = [...]` and then applies this file.
+//
+// Properties passed by CI (gradle -P...): versionCode, versionName. Signing comes from the
+// environment: CRAFT_KEYSTORE (path), CRAFT_KEYSTORE_PASSWORD, CRAFT_KEY_ALIAS, CRAFT_KEY_PASSWORD.
+// The same key must sign every release, or Android refuses to install updates over an older one.
+
+def c = project.ext.craft
+
+android {
+    namespace c.id
+    compileSdk 35
+
+    defaultConfig {
+        applicationId c.id
+        minSdk 29
+        targetSdk 35
+        versionCode((project.findProperty('versionCode') ?: '1') as int)
+        versionName((project.findProperty('versionName') ?: '0.0.0-dev') as String)
+        ndk { abiFilters 'arm64-v8a' }
+        manifestPlaceholders = [libName: c.lib, appLabel: c.label]
+    }
+
+    signingConfigs {
+        release {
+            def ks = System.getenv('CRAFT_KEYSTORE')
+            if (ks != null && new File(ks).exists()) {
+                storeFile file(ks)
+                storePassword System.getenv('CRAFT_KEYSTORE_PASSWORD')
+                keyAlias System.getenv('CRAFT_KEY_ALIAS')
+                keyPassword System.getenv('CRAFT_KEY_PASSWORD')
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig System.getenv('CRAFT_KEYSTORE') ? signingConfigs.release : signingConfigs.debug
+        }
+    }
+
+    sourceSets {
+        main {
+            manifest.srcFile "${rootDir}/../../common/android/AndroidManifest.xml"
+            java.srcDirs += ["${rootDir}/../../common/android/java"]
+            res.srcDirs += ["${rootDir}/res"]
+            jniLibs.srcDirs = ["${rootDir}/jniLibs"]
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    lint {
+        checkReleaseBuilds false
+        abortOnError false
+    }
+
+    packaging {
+        jniLibs { useLegacyPackaging = false }
+    }
+}
